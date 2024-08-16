@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Password Manager</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1, h2 {
+            color: #333;
+        }
+        form {
+            margin-bottom: 20px;
+        }
+        input, button {
+            margin: 5px 0;
+            padding: 5px;
+        }
+        #credentials {
+            margin-top: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>Password Manager</h1>
+    
+    <div id="auth-forms">
+        <h2>Sign Up</h2>
+        <form id="signup-form">
+            <input type="email" id="signup-email" placeholder="Email" required>
+            <input type="password" id="signup-password" placeholder="Password" required>
+            <button type="submit">Sign Up</button>
+        </form>
+
+        <h2>Verify Email</h2>
+        <form id="verify-form">
+            <input type="email" id="verify-email" placeholder="Email" required>
+            <input type="text" id="verify-code" placeholder="Verification Code" required>
+            <button type="submit">Verify</button>
+        </form>
+
+        <h2>Login</h2>
+        <form id="login-form">
+            <input type="hidden" name="csrf_token" id="csrf_token" value="{{ csrf_token() }}">
+            <input type="email" id="login-email" placeholder="Email">
+            <input type="password" id="login-password" placeholder="Password">
+            <button type="submit">Login</button>
+        </form>
+    </div>
+
+    <div id="main-app" style="display:none;">
+        <h2>Add/Update Credential</h2>
+        <form id="add-credential-form">
+            <input type="text" id="website" placeholder="Website" required>
+            <input type="text" id="username" placeholder="Username" required>
+            <input type="password" id="password" placeholder="Password" required>
+            <button type="submit">Add/Update</button>
+        </form>
+
+        <h2>Your Credentials</h2>
+        <div id="credentials"></div>
+
+        <h2>Change Password</h2>
+        <form id="change-password-form">
+            <input type="password" id="current-password" placeholder="Current Password" required>
+            <input type="password" id="new-password" placeholder="New Password" required>
+            <button type="submit">Change Password</button>
+        </form>
+
+        <h2>Change Email</h2>
+        <form id="change-email-form">
+            <input type="email" id="new-email" placeholder="New Email" required>
+            <input type="password" id="email-change-password" placeholder="Password" required>
+            <input id="email-change-code" placeholder="code">
+            <button type="submit">Change Email</button>
+        </form>
+
+        <h2>Delete Account</h2>
+        <button id="delete-account">Delete Account</button>
+
+        <button id="logout">Logout</button>
+    </div>
+
+    <script>
+        let token = null;
+
+        // Helper function for making API calls
+        async function apiCall(endpoint, method, data) {
+            // Function to get a specific cookie value
+            function getCookie(name) {
+                const value = `; ${document.cookie}`;
+                const parts = value.split(`; ${name}=`);
+                if (parts.length === 2) return parts.pop().split(';').shift();
+            }
+
+            // Get the CSRF token from the cookie
+            const csrfToken = getCookie('csrf_token');
+
+            const headers = {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken, 
+                'Authorization': token
+            };
+
+            const response = await fetch(`http://localhost:5000${endpoint}`, {
+                method,
+                headers,
+                body: JSON.stringify(data),
+                credentials: 'include'  
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            return await response.json();
+        }
+
+
+
+
+        // Sign Up
+        document.getElementById('signup-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('signup-email').value;
+            const password = document.getElementById('signup-password').value;
+            const result = await apiCall('/signup', 'POST', { email, password });
+            alert(result.message);
+        });
+
+        // Verify Email
+        document.getElementById('verify-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('verify-email').value;
+            const code = document.getElementById('verify-code').value;
+            const result = await apiCall('/signupwithcode', 'POST', { email, code });
+            alert(result.message);
+        });
+
+        // Login
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            const result = await apiCall('/login', 'POST', { email, password });
+            if (result.token) {
+                token = result.token;
+                document.getElementById('auth-forms').style.display = 'none';
+                document.getElementById('main-app').style.display = 'block';
+                loadCredentials();
+            } else {
+                alert(result.error);
+            }
+        });
+
+        // Add/Update Credential
+        document.getElementById('add-credential-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const website = document.getElementById('website').value;
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const result = await apiCall('/add', 'POST', { website, username, password });
+            alert(result.message);
+            loadCredentials();
+        });
+
+        // Load Credentials
+        async function loadCredentials() {
+            const result = await apiCall('/retrieve', 'POST', {});
+            const credentialsDiv = document.getElementById('credentials');
+            credentialsDiv.innerHTML = '<table><tr><th>Website</th><th>Username</th><th>Password</th><th>Actions</th></tr>';
+            result.credentials.forEach(cred => {
+                credentialsDiv.innerHTML += `
+                    <tr>
+                        <td>${cred.website}</td>
+                        <td>${cred.username}</td>
+                        <td>${cred.password}</td>
+                        <td><button onclick="deleteCredential('${cred.website}', '${cred.username}')">Delete</button></td>
+                    </tr>
+                `;
+            });
+            credentialsDiv.innerHTML += '</table>';
+        }
+
+        // Delete Credential
+        async function deleteCredential(website, username) {
+            const result = await apiCall('/delete', 'POST', { website, username });
+            alert(result.message);
+            loadCredentials();
+        }
+
+        // Change Password
+        document.getElementById('change-password-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const password = document.getElementById('current-password').value;
+            const new_password = document.getElementById('new-password').value;
+            const result = await apiCall('/setnewpassword', 'POST', { password, new_password });
+            alert(result.message);
+            logout();
+        });
+
+        // Change Email
+        document.getElementById('change-email-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const new_email = document.getElementById('new-email').value;
+            const password = document.getElementById('email-change-password').value;
+            const code = document.getElementById('email-change-code').value;
+            const result = await apiCall('/setnewemail', 'POST', { new_email, password,code });
+            alert(result.message);
+            if (!code) {
+                logout();
+            }
+        });
+
+        // Delete Account
+        document.getElementById('delete-account').addEventListener('click', async () => {
+            if (confirm('Are you sure you want to delete your account? This action cannot be undone.')) {
+                const result = await apiCall('/deleteaccount', 'POST', {});
+                alert(result.message);
+                logout();
+            }
+        });
+
+        // Logout
+        document.getElementById('logout').addEventListener('click', logout);
+
+        function logout() {
+            token = null;
+            document.getElementById('auth-forms').style.display = 'block';
+            document.getElementById('main-app').style.display = 'none';
+        }
+    </script>
+</body>
+</html>
