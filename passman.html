@@ -40,29 +40,31 @@
 </head>
 <body>
     <h1>Password Manager</h1>
-    
     <div id="auth-forms">
-        <h2>Sign Up</h2>
-        <form id="signup-form">
-            <input type="email" id="signup-email" placeholder="Email" required>
-            <input type="password" id="signup-password" placeholder="Password" required>
-            <button type="submit">Sign Up</button>
-        </form>
+        <div id="sign-up" style="display:none;">
+            <h2>Sign Up</h2>
+            <form id="signup-form">
+                <input type="email" id="signup-email" placeholder="Email" required>
+                <input type="password" id="signup-password" placeholder="Password" required>
+                <button type="submit">Sign Up</button>
+            </form>
+            <button id="switch-login">Go to login</button>
+        </div>
+        
+        <div id="verify-email" style="display:none;">
+            <h2>Chekc your email to login</h2>
+        </div>
 
-        <h2>Verify Email</h2>
-        <form id="verify-form">
-            <input type="email" id="verify-email" placeholder="Email" required>
-            <input type="text" id="verify-code" placeholder="Verification Code" required>
-            <button type="submit">Verify</button>
-        </form>
-
-        <h2>Login</h2>
-        <form id="login-form">
-            <input type="hidden" name="csrf_token" id="csrf_token" value="{{ csrf_token() }}">
-            <input type="email" id="login-email" placeholder="Email">
-            <input type="password" id="login-password" placeholder="Password">
-            <button type="submit">Login</button>
-        </form>
+        <div id="log-in">
+            <h2>Login</h2>
+            <form id="login-form">
+                <input type="hidden" name="csrf_token" id="csrf_token" value="{{ csrf_token() }}">
+                <input type="email" id="login-email" placeholder="Email">
+                <input type="password" id="login-password" placeholder="Password">
+                <button type="submit">Login</button>
+            </form>
+            <button id="switch-signup">Go to Sign up</button>
+        </div>
     </div>
 
     <div id="main-app" style="display:none;">
@@ -130,7 +132,8 @@
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            return await response.json();
+            const responseData = await response.json();
+            return { status: response.status, data: responseData };
         }
 
 
@@ -142,17 +145,32 @@
             const email = document.getElementById('signup-email').value;
             const password = document.getElementById('signup-password').value;
             const result = await apiCall('/signup', 'POST', { email, password });
-            alert(result.message);
+            if(result.status === 201 || result.status === 200){
+                document.getElementById('verify-email').style.display = 'block';
+                document.getElementById('log-in').style.display = 'none';
+                document.getElementById('sign-up').style.display = 'none';
+            }
         });
 
         // Verify Email
-        document.getElementById('verify-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const email = document.getElementById('verify-email').value;
-            const code = document.getElementById('verify-code').value;
-            const result = await apiCall('/signupwithcode', 'POST', { email, code });
-            alert(result.message);
-        });
+        window.onload = async function verifyemail() {
+            const urlObj = new URL(window.location.href);
+            const email = urlObj.searchParams.get('email');
+            const code = urlObj.searchParams.get('code');
+
+            if (email !== null && code !== null) {
+                const result = await apiCall('/signupwithcode', 'POST', { email, code });
+
+                if (result.status === 201 || result.status === 200) {
+                    alert("Email Verified");
+                } else {
+                    alert("Failed to verify email");
+                }
+                const newUrl = urlObj.origin + urlObj.pathname;
+                window.history.replaceState({}, document.title, newUrl);
+            }
+        };
+
 
         // Login
         document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -213,7 +231,7 @@
             const new_password = document.getElementById('new-password').value;
             const result = await apiCall('/setnewpassword', 'POST', { password, new_password });
             alert(result.message);
-            logout();
+            switchForm(1);
         });
 
         // Change Email
@@ -225,7 +243,7 @@
             const result = await apiCall('/setnewemail', 'POST', { new_email, password,code });
             alert(result.message);
             if (!code) {
-                logout();
+                switchForm(1);
             }
         });
 
@@ -234,18 +252,34 @@
             if (confirm('Are you sure you want to delete your account? This action cannot be undone.')) {
                 const result = await apiCall('/deleteaccount', 'POST', {});
                 alert(result.message);
-                logout();
+                switchForm(1);
             }
         });
 
         // Logout
-        document.getElementById('logout').addEventListener('click', logout);
+        document.getElementById('logout').addEventListener('click', function() {switchForm(1);});
+        document.getElementById('switch-signup').addEventListener('click', function() {switchForm(2);});
+        document.getElementById('switch-login').addEventListener('click', function() {switchForm(3);});
 
-        function logout() {
-            token = null;
-            document.getElementById('auth-forms').style.display = 'block';
-            document.getElementById('main-app').style.display = 'none';
-        }
+        function switchForm(number) {
+            switch (number) {
+                case 1:
+                    token = null;
+                    document.getElementById('auth-forms').style.display = 'block';
+                    document.getElementById('log-in').style.display = 'none';
+                    break;
+                case 2:
+                    document.getElementById('log-in').style.display = 'none';
+                    document.getElementById('verify-email').style.display = 'none';
+                    document.getElementById('sign-up').style.display = 'block';
+                    break;
+                case 3:
+                    document.getElementById('log-in').style.display = 'block';
+                    document.getElementById('verify-email').style.display = 'none';
+                    document.getElementById('sign-up').style.display = 'none';
+                    break;
+            }
+    }
     </script>
 </body>
 </html>

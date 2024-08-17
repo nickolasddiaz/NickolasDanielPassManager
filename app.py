@@ -42,8 +42,9 @@ passwordsx = os.getenv('passwordsx')
 portsx = os.getenv('portsx')
 csrfsecretekey = os.getenv('csrfsecretekey')
 
+url = "http://localhost:8000"
 app.secret_key = csrfsecretekey
-CORS(app, supports_credentials=True, origins=["http://localhost:8000"])
+CORS(app, supports_credentials=True, origins=[url])
 
 # Initialize the connection pool
 db_pool = pool.SimpleConnectionPool( 
@@ -204,7 +205,7 @@ def signup():
             )
             conn.commit()
 
-        send_email(email, "Verification Code", f"Your verification code is: {verification_code}")
+        send_email(email, "Verification Code", f"Click the link to verify {url}/passman.html?email={email}&code={verification_code}")
         return jsonify({"message": "User registered. Please check your email for verification code."}), 201
     finally:
         db_pool.putconn(conn)
@@ -557,6 +558,7 @@ CREATE TABLE stored_credentials (
     website VARCHAR(255) NOT NULL,
     username VARCHAR(255) NOT NULL,
     password VARCHAR(255)
+    UNIQUE(user_email, website, username)
 );
 
 -- Add indexes for performance
