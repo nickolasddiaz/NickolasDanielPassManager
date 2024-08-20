@@ -94,6 +94,11 @@ def handle_exception(e):
 FERNET_KEY = Fernet.generate_key()  # Generate a key for Fernet encryption
 cipher_suite = Fernet(FERNET_KEY)
 
+@app.route('/get-csrf-token', methods=['GET'])
+@csrf.exempt
+@limiter.limit("5 per minute")
+def get_csrf_token():
+    return jsonify({'csrf_token': generate_csrf()})
 
 
 def hash_password(password, salt):
@@ -290,21 +295,25 @@ def add():
         return jsonify({"error": "Invalid or expired token"}), 401
 
     data = request.json
-    website = encrypt(data.get('website'),tkey)
-    username = encrypt(data.get('username'),tkey)
-    password = encrypt(data.get('password'),tkey)
+    hashwebuser = hash_password(data.get('website')+data.get('username'), local_salt)
+    encrwebuserpass = encrypt(data.get('website')+ ',' + data.get('username')+ ',' + data.get('password'), tkey)
 
-    if not website or not username:
+    if not hashwebuser:
         return jsonify({"error": "Website, username are required"}), 400
     
     conn = db_pool.getconn()
     try:
         with conn.cursor() as cursor:
 
-            cursor.execute(""" 
-                INSERT INTO stored_credentials (user_email, website, username, password)
-                VALUES (%s, %s, %s, %s)
-            """, (user_email, website, username, password))# Update/insert the credential
+            cursor.execute("""
+            INSERT INTO stored_credentials (user_email, hashwebuser, encrwebuserpass)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (hashwebuser) 
+            DO UPDATE SET 
+                user_email = EXCLUDED.user_email,
+                encrwebuserpass = EXCLUDED.encrwebuserpass
+            """, (user_email, hashwebuser, encrwebuserpass))
+
             conn.commit()
 
             return jsonify({"message": "Credential updated successfully"}), 200
@@ -336,7 +345,7 @@ def delete():
     try:
         with conn.cursor() as cursor:
 
-            cursor.execute("DELETE FROM stored_credentials WHERE user_email = %s AND website = %s AND username = %s", (user_email, encrypt(website, tkey), encrypt(username,tkey)))
+            cursor.execute("DELETE FROM stored_credentials WHERE user_email = %s AND hashwebuser = %s", (user_email, hash_password(website+username, local_salt)))
             conn.commit()
 
             if cursor.rowcount == 0:
@@ -446,28 +455,30 @@ def setnewemail():
     user_email, tkey = verify_jwt_token(token)
     if not user_email:
         return jsonify({"error": "Invalid or expired token"}), 401
-    verifypass, key = tkey.split(".", 1)
 
+    verifypass, key = tkey.split(".", 1)
     if verifypass != local_salt:
         return jsonify({"error": "Invalid or expired token"}), 401
-    
+
     data = request.json
     new_email = data.get('new_email')
     password = data.get('password')
 
     if not new_email or not password:
         return jsonify({"error": "New email and password are required"}), 400
-    
-    if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email): # Email format validation
+
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
         return jsonify({"error": "Invalid email format"}), 400
     
     conn = db_pool.getconn()
     try:
         with conn.cursor() as cursor:
-
-            cursor.execute("SELECT encrypted_key, salt, verification_code FROM users WHERE hashed_email = %s", (user_email,)) # Verify password
+            cursor.execute("SELECT encrypted_key, salt, verification_code FROM users WHERE hashed_email = %s", (user_email,))
             user = cursor.fetchone()
-            encrypted_key, salt, verification_code  = user
+            if not user:
+                return jsonify({"error": "User not found"}), 404
+
+            encrypted_key, salt, verification_code = user
 
             password_hash = hash_password(user_email + password, salt)
             tkey = decrypt(encrypted_key, password_hash)
@@ -476,27 +487,28 @@ def setnewemail():
             if verifypass != local_salt:
                 return jsonify({"error": "Invalid email or password"}), 401
 
-            
-            new_user_email = hash_password(new_email,local_salt)
-            cursor.execute("SELECT hashed_email FROM users WHERE hashed_email = %s", (new_user_email,)) # Check if new email is already in use
+            new_user_email = hash_password(new_email, local_salt)
+            cursor.execute("SELECT hashed_email FROM users WHERE hashed_email = %s", (new_user_email,))
             verify = cursor.fetchone()
+
             if verify is not None:
-                return jsonify({"error": "Email already in use"}), 
-            
+                return jsonify({"error": "Email already in use"}), 409
+
             if verification_code is None:
-                verification_code = randint(100000, 999999) # Generate verification code
+                verification_code = randint(100000, 999999)
                 code = new_email + " " + str(verification_code)
-                cursor.execute("UPDATE users SET verification_code = %s WHERE hashed_email = %s", (code, user_email)) # Update email
+                cursor.execute("UPDATE users SET verification_code = %s WHERE hashed_email = %s", (code, user_email))
                 conn.commit()
-                send_email(new_email, "Verification Code", f"Your verification code is: {verification_code}")
+                send_email(new_email, "Verification Code", f"Your verification code is: {url}/passman.html?new_email={new_email}&code={verification_code}")
                 return jsonify({"message": "Please check your new email for verification code."}), 201
-            
+
             verification = data.get('code')
             if verification_code == new_email + ' ' + verification:
                 new_salt = generate_salt()
                 new_password_hash = hash_password(new_user_email + password, new_salt)
                 new_encrypted_key = encrypt(local_salt + '.' + key, new_password_hash)
-                cursor.execute("UPDATE users SET hashed_email = %s, encrypted_key = %s, salt = %s, verification_code = NULL WHERE hashed_email = %s", (new_user_email, new_encrypted_key, new_salt, user_email)) # Update email
+                cursor.execute("UPDATE users SET hashed_email = %s, encrypted_key = %s, salt = %s, verification_code = NULL WHERE hashed_email = %s", 
+                               (new_user_email, new_encrypted_key, new_salt, user_email))
                 conn.commit()
                 return jsonify({"message": "Email successfully verified and changed. You can now log in."}), 200
             else:
@@ -523,18 +535,27 @@ def retrieve():
     try:
         with conn.cursor() as cursor:
     
-            cursor.execute("SELECT website, username, password FROM stored_credentials WHERE user_email = %s", (user_email,))
+            cursor.execute("SELECT encrwebuserpass FROM stored_credentials WHERE user_email = %s", (user_email,))
             credentials = cursor.fetchall()
 
 
             result = []
             for cred in credentials:
-                website, username, password = cred
-                result.append({
-                    "website": decrypt(website, tkey),
-                    "username": decrypt(username, tkey),
-                    "password": decrypt(password, tkey)
-                })
+                uncryptedcreds = decrypt(cred[0], tkey);
+                splitcreds = uncryptedcreds.split(",", 3)
+                if(len(splitcreds) == 3):
+                    result.append({
+                        "website": splitcreds[0],
+                        "username": splitcreds[1],
+                        "password": splitcreds[2]
+                    })
+                else:
+                    result.append({
+                        "website": splitcreds[0],
+                        "username": splitcreds[1],
+                        "password": ""
+                    })
+            
 
             return jsonify({"credentials": result}), 200
     finally:
@@ -543,30 +564,39 @@ def retrieve():
 
 
 """
--- Users table
-CREATE TABLE users (
-    hashed_email VARCHAR(255) UNIQUE NOT NULL PRIMARY KEY,
-    encrypted_key VARCHAR(255) NOT NULL,  -- encrypted key gets unecrypted from the email + password + salt then the key can encrypt/decrypt the stored_credentials
-    salt VARCHAR(255) NOT NULL, 
-    verification_code varchar(50),
-    is_verified BOOLEAN DEFAULT FALSE
-);
+create table
+  users (
+    hashed_email text unique not null primary key,
+    encrypted_key text not null, -- encrypted key gets unecrypted from the email + password + salt then the key can encrypt/decrypt the stored_credentials
+    salt text not null,
+    verification_code text,
+    is_verified boolean default false
+  );
 
 -- Stored credentials table
-CREATE TABLE stored_credentials (
-    user_email VARCHAR(255) REFERENCES users(hashed_email),
-    website VARCHAR(255) NOT NULL,
-    username VARCHAR(255) NOT NULL,
-    password VARCHAR(255)
-    UNIQUE(user_email, website, username)
-);
+create table
+  stored_credentials (
+    user_email text references users (hashed_email),
+    hashwebuser text unique not null,
+    encrwebuserpass text not null
+  );
 
 -- Add indexes for performance
-CREATE INDEX idx_users_hashed_email ON users(hashed_email);
-CREATE INDEX idx_stored_credentials_user_email ON stored_credentials(user_email);
+create index idx_stored_credentials_hashwebuser on stored_credentials (encrwebuserpass);
+
+create index idx_users_hashed_email on users (hashed_email);
+
+create index idx_stored_credentials_user_email on stored_credentials (user_email);
+
 alter table stored_credentials
 drop constraint stored_credentials_user_email_fkey,
 add constraint stored_credentials_user_email_fkey foreign key (user_email) references users (hashed_email) on update cascade;
-add constraint stored_credentials_user_email_fkey foreign key (user_email) references users (hashed_email) on drop cascade;
+
+alter table stored_credentials
+drop constraint stored_credentials_user_email_fkey,
 add constraint stored_credentials_user_email_fkey foreign key (user_email) references users (hashed_email) on delete cascade;
+
+alter table stored_credentials
+drop constraint stored_credentials_user_email_fkey,
+add constraint stored_credentials_user_email_fkey foreign key (user_email) references users (hashed_email) on update cascade;
 """

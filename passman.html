@@ -52,13 +52,12 @@
         </div>
         
         <div id="verify-email" style="display:none;">
-            <h2>Chekc your email to login</h2>
+            <h2>Check your email to verify</h2>
         </div>
 
         <div id="log-in">
             <h2>Login</h2>
             <form id="login-form">
-                <input type="hidden" name="csrf_token" id="csrf_token" value="{{ csrf_token() }}">
                 <input type="email" id="login-email" placeholder="Email">
                 <input type="password" id="login-password" placeholder="Password">
                 <button type="submit">Login</button>
@@ -77,6 +76,7 @@
         </form>
 
         <h2>Your Credentials</h2>
+        <input type="text" id="myInput" onkeyup="searchtable()" placeholder="Search for the websites/usernames">
         <div id="credentials"></div>
 
         <h2>Change Password</h2>
@@ -90,7 +90,6 @@
         <form id="change-email-form">
             <input type="email" id="new-email" placeholder="New Email" required>
             <input type="password" id="email-change-password" placeholder="Password" required>
-            <input id="email-change-code" placeholder="code">
             <button type="submit">Change Email</button>
         </form>
 
@@ -101,43 +100,38 @@
     </div>
 
     <script>
-        let token = null;
+        function getCookie(name) {
+            const value = `; ${document.cookie}`;
+            const parts = value.split(`; ${name}=`);
+            if (parts.length === 2) return parts.pop().split(';').shift();
+            return null;
+        }
 
         // Helper function for making API calls
         async function apiCall(endpoint, method, data) {
-            // Function to get a specific cookie value
-            function getCookie(name) {
-                const value = `; ${document.cookie}`;
-                const parts = value.split(`; ${name}=`);
-                if (parts.length === 2) return parts.pop().split(';').shift();
-            }
-
-            // Get the CSRF token from the cookie
-            const csrfToken = getCookie('csrf_token');
+            let token = getCookie("jwt_token");
+            const csrf_token = getCookie('csrf_token');
 
             const headers = {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': csrfToken, 
-                'Authorization': token
+                'X-CSRFToken': csrf_token
             };
 
+            if (token) {
+                headers['Authorization'] = token;
+            }
             const response = await fetch(`http://localhost:5000${endpoint}`, {
                 method,
                 headers,
                 body: JSON.stringify(data),
-                credentials: 'include'  
+                credentials: 'include'
             });
 
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                alert(`HTTP error! status: ${response.json().message}`);
             }
-
-            const responseData = await response.json();
-            return { status: response.status, data: responseData };
+            return response;
         }
-
-
-
 
         // Sign Up
         document.getElementById('signup-form').addEventListener('submit', async (e) => {
@@ -149,18 +143,20 @@
                 document.getElementById('verify-email').style.display = 'block';
                 document.getElementById('log-in').style.display = 'none';
                 document.getElementById('sign-up').style.display = 'none';
+            }else{
+                alert(response.json().message);
             }
         });
 
-        // Verify Email
+        // Verify Email and check login and session cookies
         window.onload = async function verifyemail() {
             const urlObj = new URL(window.location.href);
             const email = urlObj.searchParams.get('email');
             const code = urlObj.searchParams.get('code');
+            const new_email = urlObj.searchParams.get('new_email');
 
-            if (email !== null && code !== null) {
+            if (email !== null && code !== null) { //signup code
                 const result = await apiCall('/signupwithcode', 'POST', { email, code });
-
                 if (result.status === 201 || result.status === 200) {
                     alert("Email Verified");
                 } else {
@@ -169,22 +165,58 @@
                 const newUrl = urlObj.origin + urlObj.pathname;
                 window.history.replaceState({}, document.title, newUrl);
             }
+            if (getCookie('csrf_token') == null) { //get the csrf_token
+                await getCsrfToken();
+            }
+            let temp = getCookie('jwt_token')//get the jwt_token
+            if (temp) {
+                document.getElementById('auth-forms').style.display = 'none';
+                document.getElementById('main-app').style.display = 'block';
+                loadCredentials();
+            }
+            if (new_email !== null && code !== null) { // changeemailcode
+                const password = prompt("Please enter your password to change your email. Press cancel to stop this");
+                
+                if (password == null || password === "") {
+                    alert("Action Canceled");
+                } else {
+                    try {
+                        const result = await apiCall('/setnewemail', 'POST', { new_email, password, code });
+                        const responseMessage = await result.json(); // Ensure the response is awaited and parsed as JSON
+                        alert(responseMessage.message);
+                        window.history.replaceState({}, document.title, newUrl);
+                        switchForm(1);
+                    } catch (error) {
+                        alert("Error changing email: " + error.message);
+                    }
+                }
+            }
         };
-
 
         // Login
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const email = document.getElementById('login-email').value;
             const password = document.getElementById('login-password').value;
-            const result = await apiCall('/login', 'POST', { email, password });
-            if (result.token) {
-                token = result.token;
-                document.getElementById('auth-forms').style.display = 'none';
-                document.getElementById('main-app').style.display = 'block';
-                loadCredentials();
-            } else {
-                alert(result.error);
+
+            try {
+                const response = await apiCall('/login', 'POST', { email, password });
+                const result = await response.json();
+
+                if (result.token) {
+                    const now = new Date();
+                    const expirationDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+                    const expires = expirationDate.toUTCString();
+                    document.cookie = `jwt_token=${result.token}; path=/; expires=${expires}; SameSite=Strict;`;
+                    // Show the main application after successful login
+                    document.getElementById('auth-forms').style.display = 'none';
+                    document.getElementById('main-app').style.display = 'block';
+                    loadCredentials();
+                } else {
+                    alert(result.message);
+                }
+            } catch (error) {
+                console.error('Error during login:', error);
             }
         });
 
@@ -194,35 +226,90 @@
             const website = document.getElementById('website').value;
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
-            const result = await apiCall('/add', 'POST', { website, username, password });
-            alert(result.message);
-            loadCredentials();
+
+            try {
+                const result = await apiCall('/add', 'POST', { website, username, password });
+
+                if (result.status === 200) {
+                    alert("Credential added successfully");
+                    const credentialsTable = document.querySelector('#credentials table tbody');
+                    const newIndex = credentialsTable.rows.length - 1; // Subtract 1 for the header row
+                    
+                    const newCredentialHtml = `
+                        <tr>
+                            <td id="web${newIndex}">${website}</td>
+                            <td id="user${newIndex}">${username}</td>
+                            <td data-password="${password}" id="pass${newIndex}">**********</td>
+                            <td>
+                                <button id="show${newIndex}" onclick="showPassword(${newIndex})">Show</button>
+                                <button id="hide${newIndex}" onclick="hidePassword(${newIndex})" style="display:none;">Hide</button>
+                                <button id="edit${newIndex}" onclick="edit(${newIndex})">Edit</button>
+                                <button id="save${newIndex}" onclick="save(${newIndex})" style="display:none;">Save</button>
+                                <button id="cancel${newIndex}" onclick="cancel(${newIndex})" style="display:none;">Cancel</button>
+                                <button class="delete-cred" data-website="${website}" data-username="${username}">Delete</button>
+            </td>
+        </tr>
+                    `;
+                    credentialsTable.insertAdjacentHTML('beforeend', newCredentialHtml);
+
+                    // Clear the form
+                    document.getElementById('website').value = '';
+                    document.getElementById('username').value = '';
+                    document.getElementById('password').value = '';
+                }
+            } catch (error) {
+                console.error('Error adding credential:', error);
+                alert("Failed to add credential. Please try again.");
+            }
         });
 
         // Load Credentials
         async function loadCredentials() {
-            const result = await apiCall('/retrieve', 'POST', {});
+            const response = await apiCall('/retrieve', 'POST', {});
+            const data = await response.json();
+            
+            // Extract the credentials array from the response
+            const credentials = data.credentials;
             const credentialsDiv = document.getElementById('credentials');
-            credentialsDiv.innerHTML = '<table><tr><th>Website</th><th>Username</th><th>Password</th><th>Actions</th></tr>';
-            result.credentials.forEach(cred => {
-                credentialsDiv.innerHTML += `
-                    <tr>
-                        <td>${cred.website}</td>
-                        <td>${cred.username}</td>
-                        <td>${cred.password}</td>
-                        <td><button onclick="deleteCredential('${cred.website}', '${cred.username}')">Delete</button></td>
-                    </tr>
+            credentialsDiv.innerHTML = '<table id="credential_tables"><tr><th>Website</th><th>Username</th><th>Password</th><th>Actions</th></tr>';
+            let temp = '';
+            credentials.forEach((cred, index) => {
+                temp += `
+                <tr>
+                    <td id="web${index}">${cred.website}</td>
+                    <td id="user${index}">${cred.username}</td>
+                    <td data-password="${cred.password}" id="pass${index}">**********</td>
+                    <td>
+                        <button id="show${index}" onclick="show(${index})">show</button>
+                        <button id="blur${index}" onclick="blurr(${index})" style="display:none;">blur</button>
+                        <button id="edit${index}" onclick="edit(${index})">Edit</button>
+                        <button id="save${index}" onclick="save(${index})" style="display:none;">Save</button>
+                        <button id="cancel${index}" onclick="cancel(${index})" style="display:none;">Cancel</button>
+                        <button class="delete-cred" data-website="${cred.website}" data-username="${cred.username}">Delete</button>
+                    </td>
+                </tr>
                 `;
             });
-            credentialsDiv.innerHTML += '</table>';
+            temp += '</table>';
+            document.querySelector('#credentials table').insertAdjacentHTML('beforeend', temp);
         }
 
-        // Delete Credential
-        async function deleteCredential(website, username) {
-            const result = await apiCall('/delete', 'POST', { website, username });
-            alert(result.message);
-            loadCredentials();
-        }
+        // Delete Credentials
+        document.getElementById('credentials').addEventListener('click', async (e) => {
+            // Check if the clicked element is a button with the class 'delete-cred'
+            if (e.target && e.target.classList.contains('delete-cred')) {
+                const row = e.target.closest('tr'); // Get the closest row element
+                const website = row.cells[0].textContent;
+                const username = row.cells[1].textContent;
+                console.log(website);
+                console.log(username);
+                const result = await apiCall('/delete', 'POST', { website, username });
+                if(result.status === 200){
+                    alert("Credential deleted successfully");
+                    row.remove(); // Remove the row from the table
+                }
+            }
+        });
 
         // Change Password
         document.getElementById('change-password-form').addEventListener('submit', async (e) => {
@@ -239,34 +326,56 @@
             e.preventDefault();
             const new_email = document.getElementById('new-email').value;
             const password = document.getElementById('email-change-password').value;
-            const code = document.getElementById('email-change-code').value;
-            const result = await apiCall('/setnewemail', 'POST', { new_email, password,code });
-            alert(result.message);
-            if (!code) {
-                switchForm(1);
-            }
+            const result = await apiCall('/setnewemail', 'POST', { new_email, password });
+            alert(result.json().message);
         });
 
         // Delete Account
         document.getElementById('delete-account').addEventListener('click', async () => {
             if (confirm('Are you sure you want to delete your account? This action cannot be undone.')) {
                 const result = await apiCall('/deleteaccount', 'POST', {});
-                alert(result.message);
+                alert(result.json().message);
                 switchForm(1);
             }
         });
 
+        async function getCsrfToken() {
+            const response = await fetch('http://localhost:5000/get-csrf-token', {
+                method: 'GET',
+                credentials: 'include',
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                const now = new Date();
+                const expirationDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+                const expires = expirationDate.toUTCString();
+                document.cookie = `csrf_token=${data.csrf_token}; path=/;  expires=${expires}; SameSite=Strict`;
+            } else {
+                console.error('Failed to get CSRF token');
+            }
+        }
+
         // Logout
-        document.getElementById('logout').addEventListener('click', function() {switchForm(1);});
+        document.getElementById('logout').addEventListener('click', function() {
+            switchForm(1);
+        });        
         document.getElementById('switch-signup').addEventListener('click', function() {switchForm(2);});
         document.getElementById('switch-login').addEventListener('click', function() {switchForm(3);});
+
+        function deleteCookie(name) {
+            document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Strict`;
+        }
 
         function switchForm(number) {
             switch (number) {
                 case 1:
-                    token = null;
-                    document.getElementById('auth-forms').style.display = 'block';
-                    document.getElementById('log-in').style.display = 'none';
+                    deleteCookie('csrf_token');
+                    deleteCookie('jwt_token');
+                    document.getElementById('auth-forms').style.display = '';
+                    document.getElementById('log-in').style.display = '';
+                    document.getElementById('main-app').style.display = 'none';
+                    location.reload();
                     break;
                 case 2:
                     document.getElementById('log-in').style.display = 'none';
@@ -280,6 +389,93 @@
                     break;
             }
     }
+        
+        function searchtable() {
+            var input, filter, table, tr, td, i, txtValue;
+            input = document.getElementById("myInput");
+            filter = input.value.toUpperCase();
+            table = document.getElementById("credential_tables");
+            tr = table.getElementsByTagName("tr");
+
+            for (i = 0; i < tr.length; i++) {
+                td = tr[i].getElementsByTagName("td")[0];
+                tf = tr[i].getElementsByTagName("td")[1];
+                if (td) {
+                    websitex = td.textContent || td.innerText;
+                if (tf) {
+                    usernamex = tf.textContent || tf.innerText;
+                }
+                if (websitex.toUpperCase().indexOf(filter) > -1 || usernamex.toUpperCase().indexOf(filter) > -1) {
+                    tr[i].style.display = "";
+                } else {
+                    tr[i].style.display = "none";
+                }
+                }
+            }
+        }
+    
+        function edit(index) {
+            show(index);
+            document.getElementById(`web${index}`).contentEditable = "true";
+            document.getElementById(`user${index}`).contentEditable = "true";
+            document.getElementById(`pass${index}`).contentEditable = "true";
+            document.getElementById(`edit${index}`).style.display = 'none';
+            document.getElementById(`save${index}`).style.display = '';
+            document.getElementById(`show${index}`).style.display = 'none';
+            document.getElementById(`blur${index}`).style.display = 'none';
+            document.getElementById(`cancel${index}`).style.display = '';
+            document.getElementById(`cancel${index}`).dataset.website = document.getElementById(`web${index}`).textContent;
+            document.getElementById(`cancel${index}`).dataset.username = document.getElementById(`user${index}`).textContent;
+            document.getElementById(`cancel${index}`).dataset.password = document.getElementById(`pass${index}`).textContent;
+        }
+
+        async function save(index) {
+            document.getElementById(`web${index}`).contentEditable = "false";
+            document.getElementById(`user${index}`).contentEditable = "false";
+            document.getElementById(`pass${index}`).contentEditable = "false";
+            document.getElementById(`edit${index}`).style.display = '';
+            document.getElementById(`save${index}`).style.display = 'none';
+            document.getElementById(`cancel${index}`).style.display = 'none';
+            document.getElementById(`show${index}`).style.display = '';
+            const website = document.getElementById(`web${index}`).textContent;
+            const username = document.getElementById(`user${index}`).textContent;
+            const password = document.getElementById(`pass${index}`).textContent;
+            const result = await apiCall('/add', 'POST', { website, username, password });
+            if (result.status === 200) {
+                alert("Credential updated successfully");
+            } else {
+                alert("Credential did not update");
+                cancel(index);
+            }
+            blurr(index);
+        }
+
+        function cancel(index) {
+            const cancelButton = document.getElementById(`cancel${index}`);
+            document.getElementById(`web${index}`).textContent = cancelButton.dataset.website;
+            document.getElementById(`user${index}`).textContent = cancelButton.dataset.username;
+            document.getElementById(`pass${index}`).textContent = cancelButton.dataset.password;
+            document.getElementById(`web${index}`).contentEditable = "false";
+            document.getElementById(`user${index}`).contentEditable = "false";
+            document.getElementById(`pass${index}`).contentEditable = "false";
+            document.getElementById(`edit${index}`).style.display = '';
+            document.getElementById(`save${index}`).style.display = 'none';
+            document.getElementById(`show${index}`).style.display = '';
+            cancelButton.style.display = 'none';
+            blurr(index);
+        }
+
+        function show(index) {
+            const passElement = document.getElementById(`pass${index}`);
+            passElement.textContent = passElement.dataset.password;
+            document.getElementById(`show${index}`).style.display = 'none';
+            document.getElementById(`blur${index}`).style.display = '';
+        }
+        function blurr(index) {
+            document.getElementById(`pass${index}`).textContent = "**********";
+            document.getElementById(`show${index}`).style.display = '';
+            document.getElementById(`blur${index}`).style.display = 'none';
+        }
     </script>
 </body>
 </html>
