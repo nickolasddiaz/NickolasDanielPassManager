@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, request # Python version 3.11.2 
+import azure.functions as func
 from flask_talisman import Talisman # Secure Headers
 from flask_wtf.csrf import CSRFProtect #C SRF protection
 from flask_limiter import Limiter # denial-of-service Protection
@@ -40,6 +41,9 @@ csrfsecretekey = os.getenv('csrfsecretekey')
 url = "http://localhost:8000"
 app.secret_key = csrfsecretekey
 CORS(app, supports_credentials=True, origins=[url])
+
+def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return func.WsgiMiddleware(app.wsgi_app).handle(req, context)
 
 # Initialize the connection pool
 db_pool = pool.SimpleConnectionPool( 
@@ -177,9 +181,6 @@ def send_email(to_email, subject, body):
     print(f"Subject: {subject}")
     print(f"Body: {body}")
 
-if __name__ == "__main__":
-    app.run(debug=True)
-    
 @app.route("/signup", methods=['POST'])
 @limiter.limit("5 per minute")
 def signup():
@@ -222,7 +223,7 @@ def signup():
                 )
                 conn.commit()
 
-            send_email(email, "Verification Code", f"Click the link to verify {url}/passman.html?email={email}&code={verification_code}")
+            send_email(email, "Verification Code", f"Click the link to verify {url}/index.html?email={email}&code={verification_code}")
             return jsonify({"message": "User registered. Please check your email for verification code."}), 201
         finally:
             db_pool.putconn(conn)
@@ -566,7 +567,7 @@ def setnewemail():
                     code = new_email + " " + str(verification_code)
                     cursor.execute("UPDATE users SET verification_code = %s WHERE hashed_email = %s", (code, user_email))
                     conn.commit()
-                    send_email(new_email, "Verification Code", f"Your verification code is: {url}/passman.html?new_email={new_email}&code={verification_code}")
+                    send_email(new_email, "Verification Code", f"Your verification code is: {url}/index.html?new_email={new_email}&code={verification_code}")
                     return jsonify({"message": "Please check your new email for verification code."}), 201
 
                 verification = data.get('code')
