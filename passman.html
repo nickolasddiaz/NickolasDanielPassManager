@@ -24,7 +24,7 @@
         #credentials {
             margin-top: 20px;
         }
-        table, #myInput{
+        table {
             width: 100%;
             border-collapse: collapse;
         }
@@ -100,7 +100,7 @@
     </div>
 
     <script>
-        url = "http://localhost:5000"
+        let url = "https://nickolaspassman-848263491631.us-east4.run.app"
         function getCookie(name) {
             const value = `; ${document.cookie}`;
             const parts = value.split(`; ${name}=`);
@@ -112,10 +112,6 @@
         async function apiCall(endpoint, method, data) {
             let token = getCookie("jwt_token");
             const csrf_token = getCookie('csrf_token');
-            if(csrf_token == undefined){
-                await getCsrfToken();
-                const csrf_token =  await getCookie('csrf_token');
-            }
 
             const headers = {
                 'Content-Type': 'application/json',
@@ -125,7 +121,7 @@
             if (token) {
                 headers['Authorization'] = token;
             }
-            const response = await fetch(`${url}${endpoint}`, {
+            const response = await fetch(`http://localhost:5000${endpoint}`, {
                 method,
                 headers,
                 body: JSON.stringify(data),
@@ -133,8 +129,7 @@
             });
 
             if (!response.ok) {
-                const errorData = await response.json();
-                await alert(`HTTP error! status: ${errorData.message}`);
+                alert(`HTTP error! status: ${response.json().message}`);
             }
             return response;
         }
@@ -222,7 +217,7 @@
                     alert(result.message);
                 }
             } catch (error) {
-                alert('Error during login:', error);
+                console.error('Error during login:', error);
             }
         });
 
@@ -248,7 +243,7 @@
                             <td data-password="${password}" id="pass${newIndex}">**********</td>
                             <td>
                                 <button id="show${newIndex}" onclick="show(${newIndex})">Show</button>
-                                <button id="hide${newIndex}" onclick="blurr(${newIndex})" style="display:none;">Hide</button>
+                                <button id="blur${newIndex}" onclick="blurr(${newIndex})" style="display:none;">Hide</button>
                                 <button id="edit${newIndex}" onclick="edit(${newIndex})">Edit</button>
                                 <button id="save${newIndex}" onclick="save(${newIndex})" style="display:none;">Save</button>
                                 <button id="cancel${newIndex}" onclick="cancel(${newIndex})" style="display:none;">Cancel</button>
@@ -264,6 +259,7 @@
                     document.getElementById('password').value = '';
                 }
             } catch (error) {
+                console.error('Error adding credential:', error);
                 alert("Failed to add credential. Please try again.");
             }
         });
@@ -306,6 +302,8 @@
                 const row = e.target.closest('tr'); // Get the closest row element
                 const website = row.cells[0].textContent;
                 const username = row.cells[1].textContent;
+                console.log(website);
+                console.log(username);
                 const result = await apiCall('/delete', 'POST', { website, username });
                 if(result.status === 200){
                     alert("Credential deleted successfully");
@@ -343,7 +341,7 @@
         });
 
         async function getCsrfToken() {
-            const response = await fetch(`${url}/get-csrf-token`, {
+            const response = await fetch('http://localhost:5000/get-csrf-token', {
                 method: 'GET',
                 credentials: 'include',
             });
@@ -355,7 +353,7 @@
                 const expires = expirationDate.toUTCString();
                 document.cookie = `csrf_token=${data.csrf_token}; path=/;  expires=${expires}; SameSite=Strict`;
             } else {
-                alert('Failed to get CSRF token');
+                console.error('Failed to get CSRF token');
             }
         }
 

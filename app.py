@@ -1,13 +1,12 @@
-from flask import Flask, jsonify, request # Python version 3.11.2 
-import azure.functions as func
-from flask_talisman import Talisman # Secure Headers
-from flask_wtf.csrf import CSRFProtect #C SRF protection
+from flask import Flask, jsonify, make_response, request # Python version 3.11.2 
+from flask_talisman import Talisman #Secure Headers
+from flask_wtf.csrf import CSRFProtect #CSRF protection
 from flask_limiter import Limiter # denial-of-service Protection
 from flask_limiter.util import get_remote_address # denial-of-service Protection
 from dotenv import load_dotenv # environment variables
-from psycopg2 import pool # connection pooling
+from psycopg2 import pool #connection pooling
 from flask_cors import CORS
-from flask_wtf.csrf import CSRFProtect, generate_csrf
+from flask_wtf.csrf import generate_csrf
 
 import os
 import hashlib
@@ -28,6 +27,11 @@ CORS(app)  # This will allow all origins by default
 
 csrf = CSRFProtect()
 
+@app.after_request
+def set_csrf_cookie(response):
+    response.set_cookie('csrf_token', generate_csrf(), domain='localhost', samesite='Strict')
+    return response
+
 load_dotenv()
 local_salt = os.getenv('local_salt') # node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY')
@@ -41,9 +45,6 @@ csrfsecretekey = os.getenv('csrfsecretekey')
 url = "http://localhost:8000"
 app.secret_key = csrfsecretekey
 CORS(app, supports_credentials=True, origins=[url])
-
-def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return func.WsgiMiddleware(app.wsgi_app).handle(req, context)
 
 # Initialize the connection pool
 db_pool = pool.SimpleConnectionPool( 
@@ -83,20 +84,15 @@ limiter = Limiter(
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
-    return jsonify(message="Rate limit exceeded", error=str(e.description)), 429
+    return jsonify(error="Rate limit exceeded", message=str(e.description)), 429
 
 @app.errorhandler(Exception)
 def handle_exception(e):
     app.logger.error(f"Unhandled exception: {str(e)}")
-    return jsonify(message="An unexpected error occurred"), 500
+    return jsonify(error="An unexpected error occurred"), 500
 
 FERNET_KEY = Fernet.generate_key()  # Generate a key for Fernet encryption
 cipher_suite = Fernet(FERNET_KEY)
-
-@app.after_request
-def set_csrf_cookie(response):
-    response.set_cookie('csrf_token', generate_csrf(), domain='localhost', samesite='Strict')
-    return response
 
 @app.route('/get-csrf-token', methods=['GET'])
 @csrf.exempt
@@ -104,15 +100,6 @@ def set_csrf_cookie(response):
 def get_csrf_token():
     return jsonify({'csrf_token': generate_csrf()})
 
-
-
-def safemes():
-    issafemes = jsonify({"message": "Input must be at least 3 to 40 characters and does not contain any unusual characters"})
-    return issafemes
-
-def is_safe_string(string):
-    pattern = r'^[^,;]{3,40}$'
-    return not bool(re.match(pattern, string))
 
 def hash_password(password, salt):
     # Concatenate the password and salt and hash using SHA-256
@@ -181,461 +168,398 @@ def send_email(to_email, subject, body):
     print(f"Subject: {subject}")
     print(f"Body: {body}")
 
+if __name__ == "__main__":
+    app.run(debug=True)
+    
 @app.route("/signup", methods=['POST'])
+@csrf.exempt
 @limiter.limit("5 per minute")
 def signup():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+        return jsonify({"error": "Invalid email format"}), 400
+
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters long"}), 400
+    
+    hashed_email = hash_password(email, local_salt)
+
+    conn = db_pool.getconn()
     try:
-        data = request.json
-        email = data.get('email')
-        password = data.get('password')
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM users WHERE hashed_email = %s", (hashed_email,))
+            if cursor.fetchone():
+                return jsonify({"error": "Email already registered"}), 400
 
-        if not email or not password:
-            return jsonify({"message": "Email and password are required"}), 400
+            salt = generate_salt()
+            password_hash = hash_password(hashed_email + password, salt)
+            key = generate_salt()
+            encrypted_key = encrypt(local_salt + '.' + key, password_hash)
 
-        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-            return jsonify({"message": "Invalid email format"}), 400
-        
-        if is_safe_string(email):
-            return safemes(), 400
+            verification_code = randint(100000, 999999)
 
-        if is_safe_string(password):
-            return safemes(), 400
-        
-        hashed_email = hash_password(email, local_salt)
+            cursor.execute(
+                "INSERT INTO users (hashed_email, encrypted_key, salt, verification_code, is_verified) VALUES (%s, %s, %s, %s, FALSE)",
+                (hashed_email, encrypted_key, salt, verification_code)
+            )
+            conn.commit()
 
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT * FROM users WHERE hashed_email = %s", (hashed_email,))
-                if cursor.fetchone():
-                    return jsonify({"message": "Email already registered"}), 400
-
-                salt = generate_salt()
-                password_hash = hash_password(hashed_email + password, salt)
-                key = generate_salt()
-                encrypted_key = encrypt(local_salt + '.' + key, password_hash)
-
-                verification_code = randint(100000, 999999)
-
-                cursor.execute(
-                    "INSERT INTO users (hashed_email, encrypted_key, salt, verification_code, is_verified) VALUES (%s, %s, %s, %s, FALSE)",
-                    (hashed_email, encrypted_key, salt, verification_code)
-                )
-                conn.commit()
-
-            send_email(email, "Verification Code", f"Click the link to verify {url}/index.html?email={email}&code={verification_code}")
-            return jsonify({"message": "User registered. Please check your email for verification code."}), 201
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+        send_email(email, "Verification Code", f"Click the link to verify {url}/passman.html?email={email}&code={verification_code}")
+        return jsonify({"message": "User registered. Please check your email for verification code."}), 201
+    finally:
+        db_pool.putconn(conn)
 
 @app.route("/signupwithcode", methods=['POST'])
 @limiter.limit("5 per minute")
+@csrf.exempt
 def signupwithcode():
+    data = request.json
+    email = data.get('email')
+    code = data.get('code')
+
+    if not email or not code: #Check if email/code exists
+        return jsonify({"error": "Email and verification code are required"}), 400
+    conn = db_pool.getconn()
     try:
-        data = request.json
-        email = data.get('email')
-        code = data.get('code')
+        with conn.cursor() as cursor:
+            hashed_email = hash_password(email, local_salt)
+            cursor.execute("SELECT * FROM users WHERE hashed_email = %s AND verification_code = %s", (hashed_email, code)) # Verify code
+            user = cursor.fetchone()
 
-        if not email or not code: #Check if email/code exists
-            return jsonify({"message": "Email and verification code are required"}),
-     
-        if is_safe_string(email):
-            return safemes(), 400
-        
-        if is_safe_string(code):
-            return safemes(), 400
+            if not user:
+                return jsonify({"error": "Invalid email or verification code"}), 400
 
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-                hashed_email = hash_password(email, local_salt)
-                cursor.execute("SELECT * FROM users WHERE hashed_email = %s AND verification_code = %s", (hashed_email, code)) # Verify code
-                user = cursor.fetchone()
+            cursor.execute("UPDATE users SET is_verified = TRUE, verification_code = NULL WHERE hashed_email = %s", (hashed_email,)) # Mark user as verified
+            conn.commit()
 
-                if not user:
-                    return jsonify({"message": "Invalid email or verification code"}), 400
-
-                cursor.execute("UPDATE users SET is_verified = TRUE, verification_code = NULL WHERE hashed_email = %s", (hashed_email,)) # Mark user as verified
-                conn.commit()
-
-                return jsonify({"message": "Email verified. You can now log in."}), 200
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+            return jsonify({"message": "Email verified. You can now log in."}), 200
+    finally:
+        db_pool.putconn(conn)
 
 @app.route("/login", methods=['POST'])
 @limiter.limit("10 per minute")
 def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password:
+        return jsonify({"error": "Email and password are required"}), 400
+    
+    conn = db_pool.getconn()
     try:
-        data = request.json
-        email = data.get('email')
-        password = data.get('password')
+        with conn.cursor() as cursor:
+            hashed_email = hash_password(email, local_salt)
+            cursor.execute("SELECT encrypted_key, salt, is_verified FROM users WHERE hashed_email = %s", (hashed_email,))
+            user = cursor.fetchone()
 
-        if not email or not password:
-            return jsonify({"message": "Email and password are required"}), 400
-        if is_safe_string(email):
-            return safemes(), 400
-        
-        if is_safe_string(password):
-            return safemes(), 400
+            if not user:
+                return jsonify({"error": "Invalid email or password"}), 401
 
-        
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-                hashed_email = hash_password(email, local_salt)
-                cursor.execute("SELECT encrypted_key, salt, is_verified FROM users WHERE hashed_email = %s", (hashed_email,))
-                user = cursor.fetchone()
+            encrypted_key, salt, is_verified = user
 
-                if not user:
-                    return jsonify({"message": "Invalid email or password"}), 401
+            if not is_verified:
+                 jsonify({"error": "Email not verified"}), 401
 
-                encrypted_key, salt, is_verified = user
+            password_hash = hash_password(hashed_email + password, salt)
+            tkey = decrypt(encrypted_key, password_hash)
+            verifypass, key = tkey.split(".", 1)
 
-                if not is_verified:
-                    jsonify({"message": "Email not verified"}), 401
+            if verifypass != local_salt:
+                return jsonify({"error": "Invalid email or password"}), 401
 
-                password_hash = hash_password(hashed_email + password, salt)
-                tkey = decrypt(encrypted_key, password_hash)
-                verifypass, key = tkey.split(".", 1)
-
-                if verifypass != local_salt:
-                    return jsonify({"message": "Invalid email or password"}), 401
-
-                token = create_jwt_token(hashed_email,tkey)
-                return jsonify({"token": token}), 200
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+            token = create_jwt_token(hashed_email,tkey)
+            return jsonify({"token": token}), 200
+    finally:
+        db_pool.putconn(conn)
 
 @app.route("/add", methods=['POST']) # Can be used to add or update a Column
 @limiter.limit("30 per minute")
 def add():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({"error": "Authorization token is missing"}), 401
+
+    user_email, tkey = verify_jwt_token(token)
+    if not user_email:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    verifypass, key = tkey.split(".", 1)
+
+    if verifypass != local_salt:
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    data = request.json
+    hashwebuser = hash_password(data.get('website')+data.get('username'), local_salt)
+    encrwebuserpass = encrypt(data.get('website')+ ',' + data.get('username')+ ',' + data.get('password'), tkey)
+
+    if not hashwebuser:
+        return jsonify({"error": "Website, username are required"}), 400
+    
+    conn = db_pool.getconn()
     try:
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({"message": "Authorization token is missing"}), 401
+        with conn.cursor() as cursor:
 
-        user_email, tkey = verify_jwt_token(token)
-        if not user_email:
-            return jsonify({"message": "Invalid or expired token"}), 401
-        verifypass, key = tkey.split(".", 1)
+            cursor.execute("""
+            INSERT INTO stored_credentials (user_email, hashwebuser, encrwebuserpass)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (hashwebuser) 
+            DO UPDATE SET 
+                user_email = EXCLUDED.user_email,
+                encrwebuserpass = EXCLUDED.encrwebuserpass
+            """, (user_email, hashwebuser, encrwebuserpass))
 
-        if verifypass != local_salt:
-            return jsonify({"message": "Invalid or expired token"}), 401
+            conn.commit()
 
-        data = request.json
-        hashwebuser = hash_password(data.get('website')+ data.get('username'), local_salt)
-        encrwebuserpass = encrypt(data.get('website')+ ',' + data.get('username')+ ',' + data.get('password'), tkey)
-        
-        if is_safe_string(data.get('website')):
-            return safemes(), 400
-        if is_safe_string(data.get('username')):
-            return safemes(), 400
-        if is_safe_string(data.get('password')):
-            return safemes(), 400
-
-
-        if not hashwebuser:
-            return jsonify({"message": "Website, username are required"}), 400
-        
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-
-                cursor.execute("""
-                INSERT INTO stored_credentials (user_email, hashwebuser, encrwebuserpass)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (hashwebuser) 
-                DO UPDATE SET 
-                    user_email = EXCLUDED.user_email,
-                    encrwebuserpass = EXCLUDED.encrwebuserpass
-                """, (user_email, hashwebuser, encrwebuserpass))
-
-                conn.commit()
-
-                return jsonify({"message": "Credential updated successfully"}), 200
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+            return jsonify({"message": "Credential updated successfully"}), 200
+    finally:
+        db_pool.putconn(conn)
 
 @app.route("/delete", methods=['POST'])
 @limiter.limit("10 per minute")
 def delete():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({"error": "Authorization token is missing"}), 401
+
+    user_email, tkey = verify_jwt_token(token)
+    if not user_email:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    verifypass, key = tkey.split(".", 1)
+
+    if verifypass != local_salt:
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    data = request.json
+    website = data.get('website')
+    username = data.get('username')
+
+    if not website:
+        return jsonify({"error": "Website is required"}), 400
+    conn = db_pool.getconn()
     try:
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({"message": "Authorization token is missing"}), 401
+        with conn.cursor() as cursor:
 
-        user_email, tkey = verify_jwt_token(token)
-        if not user_email:
-            return jsonify({"message": "Invalid or expired token"}), 401
-        verifypass, key = tkey.split(".", 1)
+            cursor.execute("DELETE FROM stored_credentials WHERE user_email = %s AND hashwebuser = %s", (user_email, hash_password(website+username, local_salt)))
+            conn.commit()
 
-        if verifypass != local_salt:
-            return jsonify({"message": "Invalid or expired token"}), 401
+            if cursor.rowcount == 0:
+                return jsonify({"message": "No credential found for the given website"}), 404
 
-        data = request.json
-        website = data.get('website')
-        username = data.get('username')
-        if is_safe_string(website):
-            return safemes(), 400
-        if is_safe_string(username):
-            return safemes(), 400
-
-        if not website:
-            return jsonify({"message": "Website is required"}), 400
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-
-                cursor.execute("DELETE FROM stored_credentials WHERE user_email = %s AND hashwebuser = %s", (user_email, hash_password(website+username, local_salt)))
-                conn.commit()
-
-                if cursor.rowcount == 0:
-                    return jsonify({"message": "No credential found for the given website"}), 404
-
-                return jsonify({"message": "Credential deleted successfully"}), 200
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+            return jsonify({"message": "Credential deleted successfully"}), 200
+    finally:
+        db_pool.putconn(conn)
 
 @app.route("/deleteaccount", methods=['POST'])
 @limiter.limit("3 per hour")
 def deleteaccount():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({"error": "Authorization token is missing"}), 401
+
+    user_email, tkey = verify_jwt_token(token)
+    if not user_email:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    verifypass, key = tkey.split(".", 1)
+
+    if verifypass != local_salt:
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    user_id = verify_jwt_token(token)
+    if not user_id:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    
+    conn = db_pool.getconn()
     try:
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({"message": "Authorization token is missing"}), 401
+        with conn.cursor() as cursor:
 
-        user_email, tkey = verify_jwt_token(token)
-        if not user_email:
-            return jsonify({"message": "Invalid or expired token"}), 401
-        verifypass, key = tkey.split(".", 1)
+            cursor.execute("DELETE FROM stored_credentials WHERE user_email = %s", (user_email,)) # Delete user's credentials
 
-        if verifypass != local_salt:
-            return jsonify({"message": "Invalid or expired token"}), 401
+            cursor.execute("DELETE FROM users WHERE hashed_email = %s", (user_email,)) # Delete user
+            conn.commit()
 
-        user_id = verify_jwt_token(token)
-        if not user_id:
-            return jsonify({"message": "Invalid or expired token"}), 401
-        
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-
-                cursor.execute("DELETE FROM stored_credentials WHERE user_email = %s", (user_email,)) # Delete user's credentials
-
-                cursor.execute("DELETE FROM users WHERE hashed_email = %s", (user_email,)) # Delete user
-                conn.commit()
-
-                return jsonify({"message": "Account deleted successfully"}), 200
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+            return jsonify({"message": "Account deleted successfully"}), 200
+    finally:
+        db_pool.putconn(conn)
 
 @app.route("/setnewpassword", methods=['POST'])
 @limiter.limit("5 per hour")
 def setnewpassword():
+    data = request.json
+    password = data.get('password')
+    new_password = data.get('new_password')
+    
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({"error": "Authorization token is missing"}), 401
+
+    user_email, tkey = verify_jwt_token(token)
+    
+    if not user_email:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    verifypass, key = tkey.split(".", 1)
+
+    if verifypass != local_salt:
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    if not new_password:
+        return jsonify({"error": "Email and new password are required"}), 400
+    
+    if len(new_password) < 8: # Password strength check
+        return jsonify({"error": "Password must be at least 8 characters long"}), 400
+    
+    conn = db_pool.getconn()
     try:
-        data = request.json
-        password = data.get('password')
-        new_password = data.get('new_password')
-        if is_safe_string(password):
-            return safemes(), 400
-        if is_safe_string(new_password):
-            return safemes(), 400
+        with conn.cursor() as cursor:
 
-        
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({"message": "Authorization token is missing"}), 401
+            cursor.execute("SELECT encrypted_key, salt FROM users WHERE hashed_email = %s", (user_email,))
+            user = cursor.fetchone()
 
-        user_email, tkey = verify_jwt_token(token)
-        
-        if not user_email:
-            return jsonify({"message": "Invalid or expired token"}), 401
-        verifypass, key = tkey.split(".", 1)
+            if not user:
+                return jsonify({"error": "Invalid or expired token"}), 401
+            
+            encrypted_key, salt = user
+            
+            password_hash = hash_password(user_email + password, salt)
+            tkey = decrypt(encrypted_key, password_hash)
+            verifypass, key = tkey.split(".", 1)
 
-        if verifypass != local_salt:
-            return jsonify({"message": "Invalid or expired token"}), 401
-
-        if not new_password:
-            return jsonify({"message": "Email and new password are required"}), 400
-        
-        if len(new_password) < 8: # Password strength check
-            return jsonify({"message": "Password must be at least 8 characters long"}), 400
-        
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-
-                cursor.execute("SELECT encrypted_key, salt FROM users WHERE hashed_email = %s", (user_email,))
-                user = cursor.fetchone()
-
-                if not user:
-                    return jsonify({"message": "Invalid or expired token"}), 401
-                
-                encrypted_key, salt = user
-                
-                password_hash = hash_password(user_email + password, salt)
-                tkey = decrypt(encrypted_key, password_hash)
-                verifypass, key = tkey.split(".", 1)
-
-                if verifypass != local_salt:
-                    return jsonify({"message": "Invalid email or password"}), 401
+            if verifypass != local_salt:
+                return jsonify({"error": "Invalid email or password"}), 401
 
 
-                new_salt = generate_salt()
-                new_password_hash = hash_password(user_email + new_password, new_salt)
-                new_encrypted_key = encrypt(local_salt + '.' + key, new_password_hash)
+            new_salt = generate_salt()
+            new_password_hash = hash_password(user_email + new_password, new_salt)
+            new_encrypted_key = encrypt(local_salt + '.' + key, new_password_hash)
 
-                cursor.execute("UPDATE users SET encrypted_key = %s, salt = %s WHERE hashed_email = %s", # Update password
-                            (new_encrypted_key, new_salt, user_email))
-                conn.commit()
+            cursor.execute("UPDATE users SET encrypted_key = %s, salt = %s WHERE hashed_email = %s", # Update password
+                        (new_encrypted_key, new_salt, user_email))
+            conn.commit()
 
-                return jsonify({"message": "Password reset successfully"}), 200
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+            return jsonify({"message": "Password reset successfully"}), 200
+    finally:
+        db_pool.putconn(conn)
 
 @app.route("/setnewemail", methods=['POST'])
 @limiter.limit("3 per hour")
 def setnewemail():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({"error": "Authorization token is missing"}), 401
+
+    user_email, tkey = verify_jwt_token(token)
+    if not user_email:
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    verifypass, key = tkey.split(".", 1)
+    if verifypass != local_salt:
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    data = request.json
+    new_email = data.get('new_email')
+    password = data.get('password')
+
+    if not new_email or not password:
+        return jsonify({"error": "New email and password are required"}), 400
+
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
+        return jsonify({"error": "Invalid email format"}), 400
+    
+    conn = db_pool.getconn()
     try:
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({"message": "Authorization token is missing"}), 401
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT encrypted_key, salt, verification_code FROM users WHERE hashed_email = %s", (user_email,))
+            user = cursor.fetchone()
+            if not user:
+                return jsonify({"error": "User not found"}), 404
 
-        user_email, tkey = verify_jwt_token(token)
-        if not user_email:
-            return jsonify({"message": "Invalid or expired token"}), 401
+            encrypted_key, salt, verification_code = user
 
-        verifypass, key = tkey.split(".", 1)
-        if verifypass != local_salt:
-            return jsonify({"message": "Invalid or expired token"}), 401
+            password_hash = hash_password(user_email + password, salt)
+            tkey = decrypt(encrypted_key, password_hash)
+            verifypass, key = tkey.split(".", 1)
 
-        data = request.json
-        new_email = data.get('new_email')
-        password = data.get('password')
-        if is_safe_string(new_email):
-            return safemes(), 400
-        if is_safe_string(password):
-            return safemes(), 400
+            if verifypass != local_salt:
+                return jsonify({"error": "Invalid email or password"}), 401
 
+            new_user_email = hash_password(new_email, local_salt)
+            cursor.execute("SELECT hashed_email FROM users WHERE hashed_email = %s", (new_user_email,))
+            verify = cursor.fetchone()
 
-        if not new_email or not password:
-            return jsonify({"message": "New email and password are required"}), 400
+            if verify is not None:
+                return jsonify({"error": "Email already in use"}), 409
 
-        if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
-            return jsonify({"message": "Invalid email format"}), 400
-        
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT encrypted_key, salt, verification_code FROM users WHERE hashed_email = %s", (user_email,))
-                user = cursor.fetchone()
-                if not user:
-                    return jsonify({"message": "User not found"}), 404
+            if verification_code is None:
+                verification_code = randint(100000, 999999)
+                code = new_email + " " + str(verification_code)
+                cursor.execute("UPDATE users SET verification_code = %s WHERE hashed_email = %s", (code, user_email))
+                conn.commit()
+                send_email(new_email, "Verification Code", f"Your verification code is: {url}/passman.html?new_email={new_email}&code={verification_code}")
+                return jsonify({"message": "Please check your new email for verification code."}), 201
 
-                encrypted_key, salt, verification_code = user
-
-                password_hash = hash_password(user_email + password, salt)
-                tkey = decrypt(encrypted_key, password_hash)
-                verifypass, key = tkey.split(".", 1)
-
-                if verifypass != local_salt:
-                    return jsonify({"message": "Invalid email or password"}), 401
-
-                new_user_email = hash_password(new_email, local_salt)
-                cursor.execute("SELECT hashed_email FROM users WHERE hashed_email = %s", (new_user_email,))
-                verify = cursor.fetchone()
-
-                if verify is not None:
-                    return jsonify({"message": "Email already in use"}), 409
-
-                if verification_code is None:
-                    verification_code = randint(100000, 999999)
-                    code = new_email + " " + str(verification_code)
-                    cursor.execute("UPDATE users SET verification_code = %s WHERE hashed_email = %s", (code, user_email))
-                    conn.commit()
-                    send_email(new_email, "Verification Code", f"Your verification code is: {url}/index.html?new_email={new_email}&code={verification_code}")
-                    return jsonify({"message": "Please check your new email for verification code."}), 201
-
-                verification = data.get('code')
-                if is_safe_string(code):
-                    return safemes(), 400
-
-                if verification_code == new_email + ' ' + verification:
-                    new_salt = generate_salt()
-                    new_password_hash = hash_password(new_user_email + password, new_salt)
-                    new_encrypted_key = encrypt(local_salt + '.' + key, new_password_hash)
-                    cursor.execute("UPDATE users SET hashed_email = %s, encrypted_key = %s, salt = %s, verification_code = NULL WHERE hashed_email = %s", 
-                                (new_user_email, new_encrypted_key, new_salt, user_email))
-                    conn.commit()
-                    return jsonify({"message": "Email successfully verified and changed. You can now log in."}), 200
-                else:
-                    return jsonify({"message": "Code is invalid"}), 400
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+            verification = data.get('code')
+            if verification_code == new_email + ' ' + verification:
+                new_salt = generate_salt()
+                new_password_hash = hash_password(new_user_email + password, new_salt)
+                new_encrypted_key = encrypt(local_salt + '.' + key, new_password_hash)
+                cursor.execute("UPDATE users SET hashed_email = %s, encrypted_key = %s, salt = %s, verification_code = NULL WHERE hashed_email = %s", 
+                               (new_user_email, new_encrypted_key, new_salt, user_email))
+                conn.commit()
+                return jsonify({"message": "Email successfully verified and changed. You can now log in."}), 200
+            else:
+                return jsonify({"error": "Code is invalid"}), 400
+    finally:
+        db_pool.putconn(conn)
 
 @app.route("/retrieve", methods=['POST'])
 @limiter.limit("60 per minute")
 def retrieve():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({"error": "Authorization token is missing"}), 401
+
+    user_email, tkey = verify_jwt_token(token)
+    if not user_email:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    verifypass, key = tkey.split(".", 1)
+
+    if verifypass != local_salt:
+        return jsonify({"error": "Invalid or expired token"}), 401
+    
+    conn = db_pool.getconn()
     try:
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({"message": "Authorization token is missing"}), 401
-
-        user_email, tkey = verify_jwt_token(token)
-        if not user_email:
-            return jsonify({"message": "Invalid or expired token"}), 401
-        verifypass, key = tkey.split(".", 1)
-
-        if verifypass != local_salt:
-            return jsonify({"message": "Invalid or expired token"}), 401
-        
-        conn = db_pool.getconn()
-        try:
-            with conn.cursor() as cursor:
-        
-                cursor.execute("SELECT encrwebuserpass FROM stored_credentials WHERE user_email = %s", (user_email,))
-                credentials = cursor.fetchall()
+        with conn.cursor() as cursor:
+    
+            cursor.execute("SELECT encrwebuserpass FROM stored_credentials WHERE user_email = %s", (user_email,))
+            credentials = cursor.fetchall()
 
 
-                result = []
-                for cred in credentials:
-                    uncryptedcreds = decrypt(cred[0], tkey);
-                    splitcreds = uncryptedcreds.split(",", 3)
-                    if(len(splitcreds) == 3):
-                        result.append({
-                            "website": splitcreds[0],
-                            "username": splitcreds[1],
-                            "password": splitcreds[2]
-                        })
-                    else:
-                        result.append({
-                            "website": splitcreds[0],
-                            "username": splitcreds[1],
-                            "password": ""
-                        })
-                
+            result = []
+            for cred in credentials:
+                uncryptedcreds = decrypt(cred[0], tkey);
+                splitcreds = uncryptedcreds.split(",", 3)
+                if(len(splitcreds) == 3):
+                    result.append({
+                        "website": splitcreds[0],
+                        "username": splitcreds[1],
+                        "password": splitcreds[2]
+                    })
+                else:
+                    result.append({
+                        "website": splitcreds[0],
+                        "username": splitcreds[1],
+                        "password": ""
+                    })
+            
 
-                return jsonify({"credentials": result}), 200
-        finally:
-            db_pool.putconn(conn)
-    except:
-        return jsonify({"message": "Unknown Error"}), 400
+            return jsonify({"credentials": result}), 200
+    finally:
+        db_pool.putconn(conn)
 
 
 
@@ -646,7 +570,7 @@ create table
     encrypted_key text not null, -- encrypted key gets unecrypted from the email + password + salt then the key can encrypt/decrypt the stored_credentials
     salt text not null,
     verification_code text,
-    is_verified boolean default false,
+    is_verified boolean default false
   );
 
 -- Stored credentials table
