@@ -1,6 +1,6 @@
 # Password Manager
 
-A secure and user-friendly password manager built with Python Flask and JavaScript.
+A secure password manager built with Python Flask, JavaScript and PostgreSQL.
 
 ![Login Screen](image-1.png)
 ![Main Dashboard](image-2.png)
