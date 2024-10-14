@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, make_response, request # Python version 3.11.2 
+from flask import Flask, jsonify, send_from_directory, request # Python version 3.11.2 
 from flask_talisman import Talisman #Secure Headers
 from flask_wtf.csrf import CSRFProtect #CSRF protection
 from flask_limiter import Limiter # denial-of-service Protection
@@ -23,13 +23,23 @@ import base64
 import atexit
 
 app = Flask(__name__)
-CORS(app)  # This will allow all origins by default
+CORS(app, resources={r"/*": {"origins": "http://localhost:5000"}}, supports_credentials=True)
 
 csrf = CSRFProtect()
 
+csp = {
+    'default-src': "'self'",
+    'script-src': "'self' 'unsafe-inline'",
+    'style-src': "'self' 'unsafe-inline'",
+    'connect-src': "'self' http://localhost:5000",
+}
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=5000)
+
 @app.after_request
 def set_csrf_cookie(response):
-    response.set_cookie('csrf_token', generate_csrf(), domain='localhost', samesite='Strict')
+    response.set_cookie('csrf_token', generate_csrf(), domain='127.0.0.1:5000', samesite='Strict')
     return response
 
 load_dotenv()
@@ -44,7 +54,6 @@ csrfsecretekey = os.getenv('csrfsecretekey')
 
 url = "http://localhost:8000"
 app.secret_key = csrfsecretekey
-CORS(app, supports_credentials=True, origins=[url])
 
 # Initialize the connection pool
 db_pool = pool.SimpleConnectionPool( 
@@ -67,12 +76,7 @@ atexit.register(close_db_pool)
 app.config['SECRET_KEY'] = secrets.token_hex(32) #CSRF protection
 csrf = CSRFProtect(app)
 
-csp = { #Secure Headers
-    'default-src': "'self'",
-    'script-src': "'self' 'unsafe-inline'",
-    'style-src': "'self' 'unsafe-inline'",
-}
-Talisman(app, content_security_policy=csp, force_https=True)
+Talisman(app, content_security_policy=csp, force_https=False) 
 
 # denial-of-service Protection
 limiter = Limiter(
@@ -99,6 +103,13 @@ cipher_suite = Fernet(FERNET_KEY)
 @limiter.limit("5 per minute")
 def get_csrf_token():
     return jsonify({'csrf_token': generate_csrf()})
+
+
+@app.route('/', methods=['GET'])
+@csrf.exempt
+@limiter.limit("5 per minute")
+def home():
+    return send_from_directory('.', 'passman.html')
 
 
 def hash_password(password, salt):
@@ -168,8 +179,6 @@ def send_email(to_email, subject, body):
     print(f"Subject: {subject}")
     print(f"Body: {body}")
 
-if __name__ == "__main__":
-    app.run(debug=True)
     
 @app.route("/signup", methods=['POST'])
 @csrf.exempt

@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Password Manager</title>
@@ -100,7 +101,7 @@
     </div>
 
     <script>
-        let url = "https://nickolaspassman-848263491631.us-east4.run.app"
+        let url = "127.0.0.1:5000"
         function getCookie(name) {
             const value = `; ${document.cookie}`;
             const parts = value.split(`; ${name}=`);
@@ -121,7 +122,7 @@
             if (token) {
                 headers['Authorization'] = token;
             }
-            const response = await fetch(`http://localhost:5000${endpoint}`, {
+            const response = await fetch(`http://127.0.0.1:5000${endpoint}`, {
                 method,
                 headers,
                 body: JSON.stringify(data),
@@ -302,8 +303,6 @@
                 const row = e.target.closest('tr'); // Get the closest row element
                 const website = row.cells[0].textContent;
                 const username = row.cells[1].textContent;
-                console.log(website);
-                console.log(username);
                 const result = await apiCall('/delete', 'POST', { website, username });
                 if(result.status === 200){
                     alert("Credential deleted successfully");
