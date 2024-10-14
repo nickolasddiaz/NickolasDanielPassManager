@@ -22,8 +22,10 @@ from Crypto.Util.Padding import pad, unpad
 import base64
 import atexit
 
+urlx = os.getenv('urlx')
+
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "http://localhost:5000"}}, supports_credentials=True)
+CORS(app, resources={r"/*": {"origins": urlx}}, supports_credentials=True)
 
 csrf = CSRFProtect()
 
@@ -31,15 +33,12 @@ csp = {
     'default-src': "'self'",
     'script-src': "'self' 'unsafe-inline'",
     'style-src': "'self' 'unsafe-inline'",
-    'connect-src': "'self' http://localhost:5000",
+    'connect-src': "'self'"+ urlx,
 }
-
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
 
 @app.after_request
 def set_csrf_cookie(response):
-    response.set_cookie('csrf_token', generate_csrf(), domain='127.0.0.1:5000', samesite='Strict')
+    response.set_cookie('csrf_token', generate_csrf(), domain=urlx, samesite='Strict')
     return response
 
 load_dotenv()
@@ -52,7 +51,7 @@ passwordsx = os.getenv('passwordsx')
 portsx = os.getenv('portsx')
 csrfsecretekey = os.getenv('csrfsecretekey')
 
-url = "http://localhost:8000"
+url = urlx
 app.secret_key = csrfsecretekey
 
 # Initialize the connection pool
@@ -219,7 +218,7 @@ def signup():
             )
             conn.commit()
 
-        send_email(email, "Verification Code", f"Click the link to verify {url}/passman.html?email={email}&code={verification_code}")
+        send_email(email, "Verification Code", f"Click the link to verify {url}/?email={email}&code={verification_code}")
         return jsonify({"message": "User registered. Please check your email for verification code."}), 201
     finally:
         db_pool.putconn(conn)
@@ -508,7 +507,7 @@ def setnewemail():
                 code = new_email + " " + str(verification_code)
                 cursor.execute("UPDATE users SET verification_code = %s WHERE hashed_email = %s", (code, user_email))
                 conn.commit()
-                send_email(new_email, "Verification Code", f"Your verification code is: {url}/passman.html?new_email={new_email}&code={verification_code}")
+                send_email(new_email, "Verification Code", f"Your verification code is: {url}/?new_email={new_email}&code={verification_code}")
                 return jsonify({"message": "Please check your new email for verification code."}), 201
 
             verification = data.get('code')

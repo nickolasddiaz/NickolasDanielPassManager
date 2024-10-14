@@ -101,7 +101,7 @@
     </div>
 
     <script>
-        let url = "127.0.0.1:5000"
+        let url = "nickolasdanielpassmanager.onrender.com"
         function getCookie(name) {
             const value = `; ${document.cookie}`;
             const parts = value.split(`; ${name}=`);
@@ -122,7 +122,7 @@
             if (token) {
                 headers['Authorization'] = token;
             }
-            const response = await fetch(`http://127.0.0.1:5000${endpoint}`, {
+            const response = await fetch(`nickolasdanielpassmanager.onrender.com${endpoint}`, {
                 method,
                 headers,
                 body: JSON.stringify(data),
@@ -340,7 +340,7 @@
         });
 
         async function getCsrfToken() {
-            const response = await fetch('http://localhost:5000/get-csrf-token', {
+            const response = await fetch('nickolasdanielpassmanager.onrender.com/get-csrf-token', {
                 method: 'GET',
                 credentials: 'include',
             });
