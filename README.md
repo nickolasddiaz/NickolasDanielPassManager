@@ -62,15 +62,10 @@ A secure password manager built with Python Flask, JavaScript and PostgreSQL.
 ### Prerequisites
 - Python version 3.11.2
 
-### Backend Setup
+### Setup
 ```bash
 pip install -r requirements.txt
 flask run
-```
-
-### Frontend Setup
-```bash
-python -m http.server 8000
 ```
 
 ### Environment Configuration
@@ -85,6 +80,7 @@ usersx = "database-username"
 passwordsx = "database-password"
 portsx = "database-port"
 csrfsecretekey = b'crsfsecretekey'
+urlx = 'url'
 ```
 
 Replace the empty values and placeholders with your actual configuration.
