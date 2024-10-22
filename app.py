@@ -1,3 +1,5 @@
+from azure.communication.email import *
+
 from flask import Flask, jsonify, send_from_directory, request # Python version 3.11.2 
 from flask_talisman import Talisman #Secure Headers
 from flask_wtf.csrf import CSRFProtect #CSRF protection
@@ -33,7 +35,6 @@ csp = {
     'default-src': "'self'",
     'script-src': "'self' 'unsafe-inline'",
     'style-src': "'self' 'unsafe-inline'",
-    'connect-src': "'self'"+ urlx,
 }
 
 @app.after_request
@@ -50,6 +51,8 @@ usersx = os.getenv('usersx')
 passwordsx = os.getenv('passwordsx')
 portsx = os.getenv('portsx')
 csrfsecretekey = os.getenv('csrfsecretekey')
+connection_string = os.getenv('connection_string')
+azuredomain = os.getenv('azuredomain')
 
 url = urlx
 app.secret_key = csrfsecretekey
@@ -173,10 +176,32 @@ def verify_jwt_token(token):
     except jwt.InvalidTokenError:
         return None
     
+from azure.communication.email import EmailClient
+
 def send_email(to_email, subject, body):
-    print(f"Sending email to: {to_email}")
-    print(f"Subject: {subject}")
-    print(f"Body: {body}")
+    email_client = EmailClient.from_connection_string(connection_string)
+
+    email_message = {
+        "senderAddress": azuredomain,  # Replace with your verified sender email
+        "content": {
+            "subject": subject,
+            "plainText": body,
+        },
+        "recipients": {
+            "to": [
+                {
+                    "address": to_email,  # Change 'email' to 'address'
+                    "displayName": "Recipient Name"
+                }
+            ]
+        }
+    }
+
+    try:
+        response = email_client.begin_send(email_message)
+        print(f"Email sent successfully. Message ID: {response.message_id}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {str(e)}")
 
     
 @app.route("/signup", methods=['POST'])
@@ -188,22 +213,33 @@ def signup():
     password = data.get('password')
 
     if not email or not password:
-        return jsonify({"error": "Email and password are required"}), 400
+        return jsonify({"error": "Email and password are required"}), 401
 
     if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        return jsonify({"error": "Invalid email format"}), 400
+        return jsonify({"error": "Invalid email format"}), 401
 
     if len(password) < 8:
-        return jsonify({"error": "Password must be at least 8 characters long"}), 400
+        return jsonify({"error": "Password must be at least 8 characters long"}), 401
     
     hashed_email = hash_password(email, local_salt)
 
     conn = db_pool.getconn()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM users WHERE hashed_email = %s", (hashed_email,))
-            if cursor.fetchone():
-                return jsonify({"error": "Email already registered"}), 400
+            cursor.execute("SELECT is_verified FROM users WHERE hashed_email = %s", (hashed_email,))
+            user = cursor.fetchone()
+            if user is not None:
+                is_verified = user[0]
+                if str(is_verified) != "False":
+                    return jsonify({"error": "Email already registered"}), 401
+                else:
+                    verification_code = randint(100000, 999999)
+                    cursor.execute("UPDATE users SET verification_code = %s WHERE hashed_email = %s", (verification_code, hashed_email,)) # Mark user as verified
+                    conn.commit()
+                    conn.commit()
+                    send_email(email, "Verification Code", f"Click the link to verify {url}/?email={email}&code={verification_code}")
+                    return jsonify({"message": "Please check your email for verification code."}), 201
+
 
             salt = generate_salt()
             password_hash = hash_password(hashed_email + password, salt)
@@ -232,7 +268,7 @@ def signupwithcode():
     code = data.get('code')
 
     if not email or not code: #Check if email/code exists
-        return jsonify({"error": "Email and verification code are required"}), 400
+        return jsonify({"error": "Email and verification code are required"}), 401
     conn = db_pool.getconn()
     try:
         with conn.cursor() as cursor:
@@ -241,7 +277,7 @@ def signupwithcode():
             user = cursor.fetchone()
 
             if not user:
-                return jsonify({"error": "Invalid email or verification code"}), 400
+                return jsonify({"error": "Invalid email, verification code or email already verified"}), 401
 
             cursor.execute("UPDATE users SET is_verified = TRUE, verification_code = NULL WHERE hashed_email = %s", (hashed_email,)) # Mark user as verified
             conn.commit()
@@ -258,7 +294,7 @@ def login():
     password = data.get('password')
 
     if not email or not password:
-        return jsonify({"error": "Email and password are required"}), 400
+        return jsonify({"error": "Email and password are required"}), 401
     
     conn = db_pool.getconn()
     try:
@@ -307,7 +343,7 @@ def add():
     encrwebuserpass = encrypt(data.get('website')+ ',' + data.get('username')+ ',' + data.get('password'), tkey)
 
     if not hashwebuser:
-        return jsonify({"error": "Website, username are required"}), 400
+        return jsonify({"error": "Website, username are required"}), 401
     
     conn = db_pool.getconn()
     try:
@@ -348,7 +384,7 @@ def delete():
     username = data.get('username')
 
     if not website:
-        return jsonify({"error": "Website is required"}), 400
+        return jsonify({"error": "Website is required"}), 401
     conn = db_pool.getconn()
     try:
         with conn.cursor() as cursor:
@@ -416,10 +452,10 @@ def setnewpassword():
         return jsonify({"error": "Invalid or expired token"}), 401
 
     if not new_password:
-        return jsonify({"error": "Email and new password are required"}), 400
+        return jsonify({"error": "Email and new password are required"}), 401
     
     if len(new_password) < 8: # Password strength check
-        return jsonify({"error": "Password must be at least 8 characters long"}), 400
+        return jsonify({"error": "Password must be at least 8 characters long"}), 401
     
     conn = db_pool.getconn()
     try:
@@ -473,10 +509,10 @@ def setnewemail():
     password = data.get('password')
 
     if not new_email or not password:
-        return jsonify({"error": "New email and password are required"}), 400
+        return jsonify({"error": "New email and password are required"}), 401
 
     if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
-        return jsonify({"error": "Invalid email format"}), 400
+        return jsonify({"error": "Invalid email format"}), 401
     
     conn = db_pool.getconn()
     try:
@@ -520,7 +556,7 @@ def setnewemail():
                 conn.commit()
                 return jsonify({"message": "Email successfully verified and changed. You can now log in."}), 200
             else:
-                return jsonify({"error": "Code is invalid"}), 400
+                return jsonify({"error": "Code is invalid"}), 401
     finally:
         db_pool.putconn(conn)
 

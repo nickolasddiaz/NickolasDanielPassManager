@@ -37,6 +37,9 @@
         th {
             background-color: #f2f2f2;
         }
+        #myInput {
+        width: 100%;
+        }
     </style>
 </head>
 <body>
@@ -122,7 +125,7 @@
             if (token) {
                 headers['Authorization'] = token;
             }
-            const response = await fetch(`nickolasdanielpassmanager.onrender.com${endpoint}`, {
+            const response = await fetch(`${endpoint}`, {
                 method,
                 headers,
                 body: JSON.stringify(data),
@@ -340,7 +343,7 @@
         });
 
         async function getCsrfToken() {
-            const response = await fetch('nickolasdanielpassmanager.onrender.com/get-csrf-token', {
+            const response = await fetch('/get-csrf-token', {
                 method: 'GET',
                 credentials: 'include',
             });

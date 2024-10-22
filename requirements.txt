@@ -9,3 +9,5 @@ pyjwt
 cryptography
 pycryptodome
 gunicorn
+yagmail
+azure-communication-email
