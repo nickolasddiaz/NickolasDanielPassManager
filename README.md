@@ -2,9 +2,9 @@
 
 A secure password manager built with Python Flask, JavaScript and PostgreSQL.
 
-![Login Screen](image-1.png)
-![Main Dashboard](image-2.png)
-![Credential Management](image.png)
+![image-1](https://github.com/user-attachments/assets/d5b7599a-1379-4a11-9f1a-289e72782ddf)
+![image-2](https://github.com/user-attachments/assets/23c1ebdb-edf5-4387-b31b-b25e497cd776)
+![image](https://github.com/user-attachments/assets/7029c775-2a5c-42ed-aa17-b343722f3896)
 
 
 ## Features
@@ -114,7 +114,8 @@ ADD CONSTRAINT stored_credentials_user_email_fkey
 FOREIGN KEY (user_email) REFERENCES users (hashed_email) ON UPDATE CASCADE ON DELETE CASCADE;
 ```
 
-![alt text](image-3.png)
+![image-3](https://github.com/user-attachments/assets/6d1e7575-2235-4e8f-aaf9-1245ef0b08b1)
+
 # Encryption and Data Management in the Password Manager
 
 ## Storing User Credentials
